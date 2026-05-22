@@ -231,6 +231,52 @@ class MultiAgent:
     def __init__(self, client: anthropic.Anthropic | None = None):
         self.client = client or anthropic.Anthropic()
 
+    def stream(self, question: str, conn: psycopg.Connection):
+        """Yield events as each LangGraph node completes.
+
+        Each event is a dict:
+            {"node": "<name>", "data": {state delta from that node}}
+        Followed at the very end by:
+            {"type": "done", "total_cost": float, "total_latency_sec": float,
+             "input_tokens": int, "output_tokens": int, "retry_count": int}
+
+        On retry, the synthesize/execute pair re-fires — clients should treat
+        each event as a replacement for the previous of the same node.
+        """
+        graph = _build_graph(self.client, conn)
+        initial: State = {
+            "question": question,
+            "schema": load_schema(conn),
+            "input_tokens": 0, "output_tokens": 0, "cost": 0.0,
+            "retry_count": 0,
+        }
+        t0 = time.perf_counter()
+        merged: dict = {}
+
+        for chunk in graph.stream(initial, stream_mode="updates"):
+            # chunk = {"node_name": {state_delta}}; our graph fires one node per step.
+            for node_name, delta in chunk.items():
+                if not isinstance(delta, dict):
+                    continue
+                # Merge for "done" totals at the end. Accumulators add; scalars replace.
+                for k, v in delta.items():
+                    if k in ("input_tokens", "output_tokens", "cost"):
+                        merged[k] = merged.get(k, 0) + (v or 0)
+                    else:
+                        merged[k] = v
+                yield {"node": node_name, "data": delta}
+
+        yield {
+            "type": "done",
+            "total_cost": round(merged.get("cost", 0.0), 6),
+            "total_latency_sec": round(time.perf_counter() - t0, 3),
+            "input_tokens": merged.get("input_tokens", 0),
+            "output_tokens": merged.get("output_tokens", 0),
+            "retry_count": merged.get("retry_count", 0),
+            "category": merged.get("category", ""),
+            "error": merged.get("error"),
+        }
+
     def answer(self, question: str, conn: psycopg.Connection) -> AgentResult:
         graph = _build_graph(self.client, conn)
         initial: State = {

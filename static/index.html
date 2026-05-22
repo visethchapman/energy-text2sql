@@ -41,20 +41,24 @@
       </div>
     </details>
 
-    <article id="status" hidden aria-busy="true">Thinking… (multi-agent typically takes 8–15s)</article>
+    <article id="status" hidden aria-busy="true"><span id="status-text">Starting…</span></article>
 
     <article id="response" hidden>
-      <h3>Plan</h3>
-      <p id="plan" class="muted"></p>
+      <details open><summary><strong>Plan</strong></summary>
+        <p id="plan" class="muted">…</p>
+      </details>
 
-      <h3>SQL</h3>
-      <pre id="sql"></pre>
+      <details open><summary><strong>SQL</strong></summary>
+        <pre id="sql">…</pre>
+      </details>
 
-      <h3>Result <small id="row-count" class="muted"></small></h3>
-      <div id="result"></div>
+      <details open><summary><strong>Result</strong> <small id="row-count" class="muted"></small></summary>
+        <div id="result">…</div>
+      </details>
 
-      <h3>Answer</h3>
-      <p id="answer"></p>
+      <details open><summary><strong>Answer</strong></summary>
+        <p id="answer">…</p>
+      </details>
 
       <hr>
       <p class="muted" id="meta"></p>
@@ -72,69 +76,140 @@
     const input = $('question');
     const btn = $('submit-btn');
     const statusEl = $('status');
+    const statusText = $('status-text');
     const responseEl = $('response');
     const errorEl = $('error');
+    let currentSource = null;
 
-    function setExample(q) {
-      input.value = q;
-      input.focus();
-    }
+    const NEXT_AFTER = {
+      plan: 'Generating SQL…',
+      synthesize: 'Executing SQL…',
+      execute: 'Writing answer…',
+      summarize: '',
+    };
+
     document.querySelectorAll('.examples button').forEach(b => {
-      b.addEventListener('click', () => setExample(b.dataset.q));
+      b.addEventListener('click', () => { input.value = b.dataset.q; input.focus(); });
     });
 
-    function renderTable(columns, rows) {
-      if (!columns.length || !rows.length) return '<p class="muted">(no rows)</p>';
-      const head = columns.map(c => `<th>${c}</th>`).join('');
-      const body = rows.map(r => '<tr>' + r.map(v => `<td>${v ?? '<em class="muted">null</em>'}</td>`).join('') + '</tr>').join('');
-      return `<figure><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></figure>`;
+    function resetUI() {
+      $('plan').textContent = '…';
+      $('sql').textContent = '…';
+      $('result').innerHTML = '…';
+      $('row-count').textContent = '';
+      $('answer').textContent = '…';
+      $('meta').innerHTML = '';
+      responseEl.hidden = false;
+      errorEl.hidden = true;
     }
 
-    form.addEventListener('submit', async (e) => {
+    function renderTable(columns, rows) {
+      if (!columns || !columns.length || !rows || !rows.length) return '<p class="muted">(no rows)</p>';
+      const head = columns.map(c => `<th>${c}</th>`).join('');
+      const body = rows.slice(0, 200).map(r => '<tr>' + r.map(v => `<td>${v ?? '<em class="muted">null</em>'}</td>`).join('') + '</tr>').join('');
+      const note = rows.length > 200 ? `<p class="muted">(showing 200 of ${rows.length} rows)</p>` : '';
+      return `<figure><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></figure>${note}`;
+    }
+
+    function showError(msg) {
+      $('error-msg').textContent = msg || 'Unknown error';
+      errorEl.hidden = false;
+      statusEl.hidden = true;
+    }
+
+    function setStatus(text) {
+      if (!text) { statusEl.hidden = true; return; }
+      statusText.textContent = text;
+      statusEl.hidden = false;
+    }
+
+    function handleEvent(ev) {
+      if (ev.type === 'error') { showError(ev.message); return; }
+
+      if (ev.type === 'done') {
+        const bits = [
+          `$${(ev.total_cost ?? 0).toFixed(4)}`,
+          `${(ev.total_latency_sec ?? 0).toFixed(2)}s`,
+          `${ev.input_tokens ?? 0}→${ev.output_tokens ?? 0} tok`,
+        ];
+        if (ev.retry_count) bits.push(`${ev.retry_count} retry`);
+        if (ev.error) bits.push(`<span class="err">${ev.category}: ${ev.error}</span>`);
+        $('meta').innerHTML = bits.join(' · ');
+        setStatus('');
+        return;
+      }
+
+      const data = ev.data || {};
+      switch (ev.node) {
+        case 'plan':
+          if (data.plan) $('plan').textContent = data.plan;
+          break;
+        case 'synthesize':
+          if (data.sql) $('sql').textContent = data.sql;
+          else if (data.error) $('sql').textContent = `(synthesis failed: ${data.error})`;
+          break;
+        case 'execute':
+          if (data.result_columns && data.result_rows) {
+            $('result').innerHTML = renderTable(data.result_columns, data.result_rows);
+            $('row-count').textContent = `(${data.result_rows.length} row${data.result_rows.length === 1 ? '' : 's'})`;
+          } else if (data.error) {
+            $('result').innerHTML = `<p class="err">SQL error: ${data.error}. Retrying…</p>`;
+          }
+          break;
+        case 'summarize':
+          if (data.final_answer) $('answer').textContent = data.final_answer;
+          break;
+      }
+      if (ev.node && NEXT_AFTER[ev.node] !== undefined) setStatus(NEXT_AFTER[ev.node]);
+    }
+
+    form.addEventListener('submit', (e) => {
       e.preventDefault();
       const question = input.value.trim();
       if (!question) return;
 
+      if (currentSource) currentSource.close();
       btn.setAttribute('aria-busy', 'true');
       btn.disabled = true;
-      statusEl.hidden = false;
-      responseEl.hidden = true;
-      errorEl.hidden = true;
+      resetUI();
+      setStatus('Planning…');
 
-      try {
-        const res = await fetch('/api/ask', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ question })
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+      const url = `/api/ask/stream?question=${encodeURIComponent(question)}`;
+      const es = new EventSource(url);
+      currentSource = es;
 
-        $('plan').textContent = data.plan || '(no plan)';
-        $('sql').textContent = data.sql || '(no SQL was generated)';
-        $('result').innerHTML = renderTable(data.result.columns, data.result.rows);
-        $('row-count').textContent = data.result.total_rows
-          ? `(${data.result.total_rows} row${data.result.total_rows === 1 ? '' : 's'}${data.result.rows.length < data.result.total_rows ? `, showing ${data.result.rows.length}` : ''})`
-          : '';
-        $('answer').textContent = data.answer || '(no answer was produced)';
-        const metaBits = [
-          `$${data.cost_usd.toFixed(4)}`,
-          `${data.latency_sec.toFixed(2)}s`,
-          `${data.input_tokens}→${data.output_tokens} tok`,
-        ];
-        if (data.retry_count) metaBits.push(`${data.retry_count} retry`);
-        if (data.error) metaBits.push(`<span class="err">${data.category}: ${data.error}</span>`);
-        $('meta').innerHTML = metaBits.join(' · ');
+      es.onmessage = (e) => {
+        try { handleEvent(JSON.parse(e.data)); }
+        catch (err) { console.error('bad SSE event', e.data, err); }
+      };
 
-        responseEl.hidden = false;
-      } catch (err) {
-        $('error-msg').textContent = err.message || String(err);
-        errorEl.hidden = false;
-      } finally {
+      es.onerror = () => {
+        // EventSource auto-retries by default; close it on first error so we don't loop.
+        es.close();
         btn.removeAttribute('aria-busy');
         btn.disabled = false;
-        statusEl.hidden = true;
-      }
+        // Only show generic error if we haven't already shown one
+        if (errorEl.hidden) showError('Connection lost. The request may still be running on the server. Try again.');
+      };
+
+      // 'done' or 'error' from the server are normal stream-end signals — close cleanly.
+      const origHandle = handleEvent;
+      // (we don't actually need to wrap — server closes the stream itself after 'done')
+
+      // Detect normal close by listening for the 'done' event in handleEvent above,
+      // and clean up button state once we see one:
+      const origOnMessage = es.onmessage;
+      es.onmessage = (e) => {
+        origOnMessage(e);
+        try {
+          const parsed = JSON.parse(e.data);
+          if (parsed.type === 'done' || parsed.type === 'error') {
+            es.close();
+            btn.removeAttribute('aria-busy');
+            btn.disabled = false;
+          }
+        } catch {}
+      };
     });
   </script>
 </body>

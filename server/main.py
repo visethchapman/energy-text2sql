@@ -13,14 +13,18 @@ Run:
 
 from __future__ import annotations
 
+import asyncio
+import datetime as dt
+import json
 import os
+from decimal import Decimal
 from pathlib import Path
 from typing import Annotated
 
 import psycopg
 from dotenv import load_dotenv
-from fastapi import Body, FastAPI, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import Body, FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(dotenv_path=ROOT / ".env", override=True)
@@ -89,6 +93,67 @@ def ask(payload: Annotated[dict, Body()]) -> JSONResponse:
         "input_tokens": result.input_tokens,
         "output_tokens": result.output_tokens,
         "retry_count": result.extra.get("retry_count", 0),
+    })
+
+
+class _JSONEncoder(json.JSONEncoder):
+    """Handles Decimal/date/datetime that pop out of Postgres rows."""
+    def default(self, obj):
+        if isinstance(obj, Decimal):
+            return float(obj)
+        if isinstance(obj, (dt.datetime, dt.date)):
+            return obj.isoformat()
+        return super().default(obj)
+
+
+def _sse(event: dict) -> str:
+    return f"data: {json.dumps(event, cls=_JSONEncoder)}\n\n"
+
+
+@app.get("/api/ask/stream")
+async def ask_stream(question: Annotated[str, Query(min_length=1, max_length=1000)]):
+    """SSE endpoint — emits one event per LangGraph node completion.
+
+    Client should use EventSource. Each event is either:
+      {"node": "plan|synthesize|execute|summarize", "data": {...}}
+      {"type": "done", ...totals}
+      {"type": "error", "message": "..."}
+    """
+    question = question.strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="question is required")
+
+    async def generator():
+        conn: psycopg.Connection | None = None
+        try:
+            conn = await asyncio.to_thread(psycopg.connect, DB_URL)
+            stream = _agent.stream(question, conn)
+            while True:
+                try:
+                    event = await asyncio.to_thread(next, stream)
+                except StopIteration:
+                    break
+                except anthropic.APIStatusError as e:
+                    yield _sse({"type": "error",
+                                "message": f"upstream LLM error ({e.status_code}). "
+                                           "Anthropic may be rate-limited or overloaded. Try again."})
+                    return
+                except anthropic.APIConnectionError:
+                    yield _sse({"type": "error", "message": "could not reach Anthropic"})
+                    return
+                except psycopg.Error as e:
+                    yield _sse({"type": "error", "message": f"database error: {str(e)[:200]}"})
+                    return
+                yield _sse(event)
+        except psycopg.OperationalError as e:
+            yield _sse({"type": "error", "message": f"database unavailable: {e}"})
+        finally:
+            if conn is not None:
+                await asyncio.to_thread(conn.close)
+
+    return StreamingResponse(generator(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",  # disable proxy buffering if behind nginx later
     })
 
 
