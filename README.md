@@ -1,122 +1,255 @@
-# Energy Text-to-SQL Agent
+# Energy Text-to-SQL
 
-A multi-agent natural-language-to-SQL system for the US electricity grid. Ask
-plain-English questions like *"How did the February 2021 Texas freeze affect
-ERCOT demand?"* and get an answer backed by real EIA hourly demand data joined
-with NOAA weather.
+A natural-language-to-SQL system for the US electricity grid. Ask a
+question like *"How did the February 2021 Texas freeze affect ERCOT
+demand?"* and get back the SQL, the result table, and a written answer.
 
-Inspired by Databricks'
-[`dbx-unifiedchat`](https://github.com/databricks-solutions/dbx-unifiedchat)
-reference architecture, re-implemented on a fully open stack (Postgres +
-pgvector + LangGraph + Claude API) so anyone can clone and run it locally
-without a Databricks workspace.
+Runs locally on Postgres + pgvector + LangGraph + Claude + FastAPI — no
+Databricks workspace required. The shape of the pipeline is borrowed from
+Databricks' [dbx-unifiedchat](https://github.com/databricks-solutions/dbx-unifiedchat).
 
-## Status
+> **Status:** v1 done. Multi-agent pipeline, streaming UI, 12/12 on the
+> 12-question eval. v2 ideas in the [roadmap](#roadmap).
 
-**Week 1, Day 1** — data + schema bootstrap. Agent comes next.
+---
 
-## Stack
+## What it does
 
-| Layer | Tech |
-|---|---|
-| Database | Postgres 16 + pgvector (Docker) |
-| Data | EIA Open Data v2 (electricity), NOAA GHCN-Daily (weather) |
-| Runtime | Python 3.11 + `uv` |
-| Orchestration | LangGraph *(Day 4+)* |
-| LLM | Anthropic Claude Sonnet 4.5 + Haiku 4.5 *(Day 2+)* |
-| Tracing | MLflow *(Day 6+)* |
+Type a question. A four-node LangGraph workflow runs:
 
-## Quick start
+1. **plans** the query (which tables, which joins, any pitfalls)
+2. **synthesizes** SQL against the schema (Claude Sonnet 4.5)
+3. **executes** it on Postgres, with up to 2 retries on SQL errors
+4. **summarizes** the rows into a written answer (Claude Haiku 4.5)
+
+The frontend uses SSE so each step appears as soon as it finishes,
+instead of blocking on the full 8–15 second round-trip.
+
+```mermaid
+flowchart LR
+    Q([Question]) --> P[plan<br/><sub>Sonnet</sub>]
+    P --> S[synthesize<br/><sub>Sonnet</sub>]
+    S -->|valid SQL| X[execute<br/><sub>Postgres</sub>]
+    S -->|no SQL / unsafe| W[summarize<br/><sub>Haiku</sub>]
+    X -->|success| W
+    X -->|sql_error,<br/>retries left| S
+    X -->|sql_error,<br/>retries exhausted| W
+    W --> A([Answer])
+```
+
+### Example questions it can answer
+
+- *"What was the peak hourly ERCOT demand in 2024, and when did it occur?"*
+  → 85,544 MWh on Aug 20, 2024 at 23:00 UTC.
+- *"Correlation between Houston daily max temperature and average daily ERCOT demand across 2024."*
+  → 0.58 — moderate positive correlation, consistent with summer AC load.
+- *"During the February 2021 Texas freeze, what was each day's Houston minimum temperature and average daily ERCOT demand?"*
+  → Feb 16: Houston at −10.5 °C, demand at ~45,000 MWh. Far below the usual winter peak — the rolling blackouts cut load.
+
+---
+
+## Eval scoreboard
+
+The eval harness (`eval/run.py`) runs each agent against a 12-question
+dataset and compares result rows, not SQL strings (sort-insensitive,
+float-tolerant).
+
+| Agent | Correct | Total cost | Avg latency | Notes |
+|---|---|---|---|---|
+| **baseline** (single Claude call, schema in prompt) | 12/12 | $0.054 | 4.6s | First run scored 10/12. The two failures were a UTC-vs-local-date bug in my gold SQL, not the agent's output. |
+| **multi** (LangGraph 4-node) | 12/12 | $0.103 (2.3×) | 9.6s (2.1×) | First run scored 7/12. The synthesis prompt was pushing timezone conversion on every query, including ones that didn't need it. |
+
+Both agents tie at 12/12. The multi-agent does things the eval can't
+score: written summaries, retrying on SQL errors, and handling empty
+results without making up an answer.
+
+See [`eval/README.md`](eval/README.md) for the dataset format and known
+scorer limitations.
+
+---
+
+## Demo
+
+📹 *Demo video coming.*
+
+Run it yourself in about 10 minutes:
 
 ### Prerequisites
+- macOS or Linux
+- Docker (OrbStack recommended on M-series Macs — `brew install --cask orbstack`)
+- Python 3.12 + [`uv`](https://docs.astral.sh/uv/) (`brew install uv`)
+- An Anthropic API key — register at <https://console.anthropic.com>
+- An EIA Open Data key — instant signup at <https://www.eia.gov/opendata/register.php>
 
-- Docker Desktop (or OrbStack — lighter on Mac)
-- Python 3.11+
-- `uv` — install via `curl -LsSf https://astral.sh/uv/install.sh | sh`
-
-### 1. EIA API key
-
-Register (free, instant) at <https://www.eia.gov/opendata/register.php>.
-
-### 2. Configure
+### Setup
 
 ```bash
+git clone https://github.com/visethchapman/energy-text2sql.git
+cd energy-text2sql
+
+# config
 cp .env.example .env
-# edit .env: paste your EIA_API_KEY
-```
+# edit .env: paste ANTHROPIC_API_KEY and EIA_API_KEY
 
-### 3. Start Postgres
-
-```bash
+# database
 docker compose up -d
-```
 
-### 4. Install Python deps
-
-```bash
+# deps
 uv sync
+
+# load data (5 years of ERCOT hourly demand + Houston weather)
+uv run python etl/01_load_eia.py --region ERCO
+uv run python etl/02_load_noaa.py
+uv run python etl/03_schema_docs.py
 ```
 
-### 5. Load data
+### Run the agent
 
 ```bash
-uv run python etl/01_load_eia.py --region ERCO          # ~5 min, ~40k rows
-uv run python etl/02_load_noaa.py                        # ~30 sec
-uv run python etl/03_schema_docs.py                      # instant
+# CLI — single question
+uv run python agent/baseline.py "What was peak demand in 2024?"
+
+# CLI — interactive REPL
+uv run python agent/baseline.py --interactive
+
+# Web UI — multi-agent with streaming
+uv run uvicorn server.main:app --port 8000
+# then open http://localhost:8000
 ```
 
-For all four major regions:
+### Run the eval
 
 ```bash
-uv run python etl/01_load_eia.py --region ERCO CISO PJM NYIS
+uv run python eval/run.py --agent baseline
+uv run python eval/run.py --agent multi --save
 ```
 
-### 6. Verify
-
-```bash
-docker exec -it energy-postgres psql -U energy -d energy -c \
-  "SELECT region, COUNT(*) AS rows, MIN(period) AS first, MAX(period) AS last
-   FROM eia.demand GROUP BY region;"
-```
-
-You should see one row per loaded region with ~40,000+ hours of data.
+---
 
 ## Repository layout
 
 ```
 .
-├── docker-compose.yml      # Postgres 16 + pgvector
-├── pyproject.toml          # Python deps (uv)
-├── .env.example            # Config template
-├── db/init.sql             # Schemas + tables (auto-runs on first container start)
-├── etl/
-│   ├── 01_load_eia.py      # EIA hourly demand -> eia.demand
-│   ├── 02_load_noaa.py     # NOAA daily weather -> noaa.daily_weather
-│   └── 03_schema_docs.py   # Schema cards -> docs.schema_cards
-├── agent/                  # LangGraph multi-agent (Day 4+)
-└── eval/                   # Eval harness + scorer (Day 3+)
+├── agent/
+│   ├── base.py           # Agent protocol shared by both agents
+│   ├── baseline.py       # Day 2 single-call agent
+│   └── multi.py          # Day 4 LangGraph 4-node agent + streaming
+├── eval/
+│   ├── dataset.jsonl     # 12 hand-curated questions + gold SQL
+│   ├── scorer.py         # result-equivalence comparison
+│   ├── run.py            # CLI runner with --agent dispatch
+│   └── README.md         # dataset format, semantic gotchas, runs
+├── server/
+│   └── main.py           # FastAPI: /api/ask, /api/ask/stream (SSE)
+├── static/
+│   └── index.html        # single-page UI, Pico.css, EventSource
+├── db/
+│   └── init.sql          # Postgres schemas + pgvector extension
+├── etl/                  # data loaders (EIA API + NOAA GHCN-Daily)
+├── docker-compose.yml    # Postgres 16 + pgvector
+├── TODO.md               # known limitations + v2 work
+└── README.md             # you are here
 ```
+
+---
+
+## What I learned
+
+The parts of this project I'd actually want to talk about if someone
+asked.
+
+### The eval caught a bug in my gold SQL
+
+My first eval run scored the baseline at 10/12. Both failures were "wrong
+by about 1%" on cross-domain queries. Turned out the agent's SQL was
+using `(period AT TIME ZONE 'America/Chicago')::date` to align UTC demand
+timestamps with NOAA's local-date observations. My gold SQL was casting
+UTC directly. The eval caught the bug in my SQL, not the agent's.
+
+I updated the gold to match the agent's semantics and wrote up what
+happened in `eval/README.md`. Takeaway: an eval tests both sides — the
+agent's output and your assumptions about what "right" looks like.
+
+### Multi-agent got worse before it got better
+
+The first multi-agent run scored 7/12, worse than the baseline's 12/12.
+The synthesis prompt told the model to convert UTC timestamps to local
+time, which is the right move for cross-domain joins but wrong for
+single-table demand queries. The model applied it everywhere and shifted
+year boundaries by 6 hours.
+
+I tightened the prompt so timezone conversion only fires when joining
+with NOAA, and the score went back to 12/12. Takeaway: prompt
+instructions get followed more literally than you expect, and the eval
+is what makes that visible.
+
+### "Multi-agent" doesn't mean what it sounds like
+
+What most people mean by "multi-agent" in 2026 is a graph of LLM nodes
+with different prompts that share state. LangGraph, CrewAI, and
+dbx-unifiedchat all do this. The academic meaning is autonomous agents
+with their own memory and goals, sometimes running in parallel.
+
+This project is the industry kind: a graph of prompts sharing state, not
+autonomous agents. I use "multi-agent" because that's the term recruiters
+search for, but the graph is one Claude client called with four different
+prompts in sequence.
+
+### Schema semantics are harder than SQL
+
+The longest debugging stretches weren't LangGraph syntax or Claude API
+quirks. They were figuring out whether "peak demand in 2024" means UTC
+2024 or Chicago-local 2024, and how to join a UTC timestamp table with a
+local-date table without misaligning days. A text-to-SQL agent has to
+understand the semantics, not just the column names, and prompts only
+get you partway there.
+
+### Streaming changes how slow agents feel
+
+Without streaming, an 8–15 second wait looks like the page is frozen.
+SSE pushes each node's output as it finishes, so plan, SQL, result
+table, and answer fill in over the same time window. Total latency is
+identical. The experience of using it is not.
+
+---
 
 ## Roadmap
 
-| Day | Deliverable | Status |
-|---|---|---|
-| 1 | Postgres + ETL — EIA + NOAA loaded | ✅ |
-| 2 | Baseline single-call agent (schema in prompt) | |
-| 3 | First eval set (20 hand-curated questions) + result-equivalence scorer | |
-| 4 | LangGraph multi-agent: planning → synthesis → execution → summarize | |
-| 5 | Vector-search routing over schema cards (pgvector) | |
-| 6 | SQL retry loop + MLflow tracing | |
-| 7 | FastAPI server + minimal React UI | |
-| 8+ | Polish, BIRD baseline number, recorded demo video | |
+### Done
+- Day 1: data loaders (EIA + NOAA) + Postgres + pgvector
+- Day 2: baseline single-call agent
+- Day 3: eval harness + result-equivalence scorer
+- Day 4: LangGraph multi-agent (plan / synthesize / execute / summarize)
+- Day 5: FastAPI + Pico.css UI + SSE streaming
+- Day 6: README + demo video + polish
 
-## Demo questions (target)
+### v2 ideas (see [TODO.md](TODO.md))
+- Encode region→timezone in the schema (today: hardcoded to Houston/Chicago)
+- LLM-as-judge scoring mode to catch summary hallucinations
+- Grow eval dataset to ~25 questions, including window functions + cross-region joins
+- Load CISO/PJM/NYIS demand for genuine multi-region queries
+- DSPy optimizer pass on the synthesis prompt (needs the larger eval set first)
+- Vector-search routing over schema cards (instead of stuffing the entire schema in every prompt)
 
-- *"How did the February 2021 Texas freeze affect ERCOT electricity demand?"*
-- *"What is the correlation between daily peak temperature and electricity demand in California?"*
-- *"Compare average electricity demand in summer vs winter across all four regions."*
-- *"Find days where NYC temperature exceeded 35 deg C and show the next-day demand spike."*
+---
 
 ## License
 
-MIT.
+MIT — see [`LICENSE`](LICENSE).
+
+## Acknowledgments
+
+- Databricks [`dbx-unifiedchat`](https://github.com/databricks-solutions/dbx-unifiedchat) — the
+  reference architecture this project borrows from. The plan → synthesize
+  → execute → summarize pipeline is from there; the open-stack adaptation
+  is mine.
+- [EIA Open Data](https://www.eia.gov/opendata/) — hourly electricity
+  demand by US balancing authority.
+- [NOAA GHCN-Daily](https://www.ncei.noaa.gov/products/land-based-station/global-historical-climatology-network-daily) —
+  daily weather observations from thousands of stations.
+- Built with [LangGraph](https://github.com/langchain-ai/langgraph),
+  [FastAPI](https://fastapi.tiangolo.com/),
+  [pgvector](https://github.com/pgvector/pgvector),
+  [Pico.css](https://picocss.com/),
+  [Anthropic Claude](https://www.anthropic.com), and
+  [`uv`](https://docs.astral.sh/uv/).
