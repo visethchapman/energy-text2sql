@@ -1,0 +1,87 @@
+# Eval harness
+
+The job of this directory: produce one number that tracks whether the agent
+is getting better or worse over time. Without it, every Day 4+ "improvement"
+is a vibe.
+
+## Files
+
+| File | Role |
+|---|---|
+| `dataset.jsonl` | 12 hand-curated questions + gold SQL |
+| `scorer.py` | Compare two result sets (sort-insensitive, float-tolerant) |
+| `run.py` | Run an agent against the dataset, print + save a scoreboard |
+| `runs/` | Per-run JSON snapshots (gitignored except a baseline reference) |
+
+## Running
+
+```bash
+uv run python eval/run.py                # full dataset
+uv run python eval/run.py --limit 3      # smoke test
+uv run python eval/run.py --ids q09 q10  # specific questions
+uv run python eval/run.py --save -v      # save + show failure reasons
+```
+
+## Dataset format (`dataset.jsonl`)
+
+One JSON object per line:
+
+```json
+{
+  "id": "q01",
+  "question": "What is the lowest hourly ERCOT demand value in the dataset?",
+  "gold_sql": "SELECT MIN(value) FROM eia.demand WHERE region = 'ERCO'",
+  "tags": ["agg", "single_table"],
+  "notes": "optional: subtle reasoning or known semantic considerations"
+}
+```
+
+The `gold_sql` is *not* the canonical correct query — there can be many. It's
+*one* query the maintainer verified produces the right rows. The eval
+compares the agent's result-rows against the gold's result-rows.
+
+## Known semantic gotchas
+
+### Timezone alignment in cross-domain joins (q10, q12)
+
+`eia.demand.period` is `TIMESTAMPTZ` stored in **UTC**.
+`noaa.daily_weather.obs_date` is a **local-station date** (Houston station =
+America/Chicago, etc.).
+
+Naive `period::date` casts UTC hours to UTC dates, which **does not align**
+with NOAA local dates. For Houston in winter (UTC−6), the calendar day "Feb
+13" in Chicago covers UTC hours 2021-02-13 06:00 through 2021-02-14 05:59.
+Grouping by `period::date` puts the wrong six hours of demand into "Feb 13."
+
+Correct pattern, which the v1 baseline agent produced before we had it in
+the gold:
+
+```sql
+GROUP BY (period AT TIME ZONE 'America/Chicago')::date
+```
+
+The first eval run surfaced this — the agent's answer was *more* correct than
+the gold. Lesson: an eval's value is bidirectional. It tests the agent and
+it tests your ground truth.
+
+### Float tolerance
+
+`scorer.py` compares floats with `rel_tol=1e-3, abs_tol=1e-3`. Some
+correlation / aggregation queries may legitimately drift more than that
+depending on aggregation order. If you see "value mismatch" by a tiny
+fraction, that's the bound to revisit, not the agent.
+
+### Row ordering
+
+The current scorer sorts both result sets before comparing, so queries that
+return the same rows in a different order are treated as equivalent. This is
+wrong for queries that explicitly ask for ordering ("top 10 by X") — those
+should preserve order. Tracked for a v2 scorer.
+
+## Baseline reference
+
+| Run | Agent | Dataset | Correct | Avg cost | Avg latency |
+|---|---|---|---|---|---|
+| 2026-05-21 | baseline (Sonnet 4.5, single call, schema-in-prompt) | v1 (12 Qs) | 10/12 → fixed gold → 12/12 | $0.0045 | 4.6s |
+
+This is the floor. Every Day 4+ change must measurably move this.

@@ -5,6 +5,7 @@ __pycache__/
 data/raw/
 data/processed/
 data/*.json
+eval/runs/
 .pytest_cache/
 .ruff_cache/
 *.egg-info/
