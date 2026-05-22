@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Energy Text-to-SQL</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  <style>
+    body { padding: 2rem 0; }
+    pre { white-space: pre-wrap; word-break: break-word; max-height: 320px; overflow: auto; font-size: 0.85em; }
+    table { font-size: 0.9em; }
+    .muted { color: var(--pico-muted-color); font-size: 0.85em; }
+    .err   { color: var(--pico-color-red-500); }
+    .row   { display: flex; gap: 1rem; align-items: baseline; flex-wrap: wrap; }
+    [hidden] { display: none !important; }
+    h3 { margin-top: 1.5rem; margin-bottom: 0.5rem; }
+    .examples button { padding: 0.25rem 0.75rem; font-size: 0.85em; margin: 0.2rem 0.2rem 0.2rem 0; }
+  </style>
+</head>
+<body>
+  <main class="container">
+    <hgroup>
+      <h1>Energy Text-to-SQL</h1>
+      <p>Ask plain-English questions about US electricity grid + Houston weather.</p>
+    </hgroup>
+
+    <form id="ask-form">
+      <input type="text" id="question" name="question"
+             placeholder="e.g. What was peak ERCOT demand in 2024?" required autocomplete="off">
+      <button type="submit" id="submit-btn">Ask</button>
+    </form>
+
+    <details>
+      <summary>Example questions</summary>
+      <div class="examples">
+        <button type="button" data-q="What was the peak hourly ERCOT demand in 2024?">peak demand 2024</button>
+        <button type="button" data-q="Total annual ERCOT demand for each year.">annual totals</button>
+        <button type="button" data-q="Compare ERCOT average hourly demand on weekdays vs weekends in 2024.">weekday vs weekend</button>
+        <button type="button" data-q="During the February 2021 Texas freeze (Feb 13-19, 2021), what was each day's Houston minimum temperature and average daily ERCOT demand?">feb 2021 freeze</button>
+        <button type="button" data-q="Correlation between Houston daily max temperature and average daily ERCOT demand across 2024.">temp/demand correlation</button>
+      </div>
+    </details>
+
+    <article id="status" hidden aria-busy="true">Thinking… (multi-agent typically takes 8–15s)</article>
+
+    <article id="response" hidden>
+      <h3>Plan</h3>
+      <p id="plan" class="muted"></p>
+
+      <h3>SQL</h3>
+      <pre id="sql"></pre>
+
+      <h3>Result <small id="row-count" class="muted"></small></h3>
+      <div id="result"></div>
+
+      <h3>Answer</h3>
+      <p id="answer"></p>
+
+      <hr>
+      <p class="muted" id="meta"></p>
+    </article>
+
+    <article id="error" hidden class="err">
+      <h3>Error</h3>
+      <p id="error-msg"></p>
+    </article>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const form = $('ask-form');
+    const input = $('question');
+    const btn = $('submit-btn');
+    const statusEl = $('status');
+    const responseEl = $('response');
+    const errorEl = $('error');
+
+    function setExample(q) {
+      input.value = q;
+      input.focus();
+    }
+    document.querySelectorAll('.examples button').forEach(b => {
+      b.addEventListener('click', () => setExample(b.dataset.q));
+    });
+
+    function renderTable(columns, rows) {
+      if (!columns.length || !rows.length) return '<p class="muted">(no rows)</p>';
+      const head = columns.map(c => `<th>${c}</th>`).join('');
+      const body = rows.map(r => '<tr>' + r.map(v => `<td>${v ?? '<em class="muted">null</em>'}</td>`).join('') + '</tr>').join('');
+      return `<figure><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></figure>`;
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const question = input.value.trim();
+      if (!question) return;
+
+      btn.setAttribute('aria-busy', 'true');
+      btn.disabled = true;
+      statusEl.hidden = false;
+      responseEl.hidden = true;
+      errorEl.hidden = true;
+
+      try {
+        const res = await fetch('/api/ask', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ question })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+
+        $('plan').textContent = data.plan || '(no plan)';
+        $('sql').textContent = data.sql || '(no SQL was generated)';
+        $('result').innerHTML = renderTable(data.result.columns, data.result.rows);
+        $('row-count').textContent = data.result.total_rows
+          ? `(${data.result.total_rows} row${data.result.total_rows === 1 ? '' : 's'}${data.result.rows.length < data.result.total_rows ? `, showing ${data.result.rows.length}` : ''})`
+          : '';
+        $('answer').textContent = data.answer || '(no answer was produced)';
+        const metaBits = [
+          `$${data.cost_usd.toFixed(4)}`,
+          `${data.latency_sec.toFixed(2)}s`,
+          `${data.input_tokens}→${data.output_tokens} tok`,
+        ];
+        if (data.retry_count) metaBits.push(`${data.retry_count} retry`);
+        if (data.error) metaBits.push(`<span class="err">${data.category}: ${data.error}</span>`);
+        $('meta').innerHTML = metaBits.join(' · ');
+
+        responseEl.hidden = false;
+      } catch (err) {
+        $('error-msg').textContent = err.message || String(err);
+        errorEl.hidden = false;
+      } finally {
+        btn.removeAttribute('aria-busy');
+        btn.disabled = false;
+        statusEl.hidden = true;
+      }
+    });
+  </script>
+</body>
+</html>
