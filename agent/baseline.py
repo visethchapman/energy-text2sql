@@ -22,11 +22,14 @@ import argparse
 import os
 import re
 import sys
+import time
 from pathlib import Path
 from textwrap import dedent
 
 import psycopg
 from dotenv import load_dotenv
+
+from agent.base import AgentResult
 
 # Load .env BEFORE importing anthropic. override=True is critical:
 # Claude Code injects its own ANTHROPIC_API_KEY into the shell via launchctl,
@@ -187,6 +190,49 @@ def run_one(question: str, client: anthropic.Anthropic, conn: psycopg.Connection
         print(f"✗ Postgres error: {e}")
         # roll back the failed transaction so the connection stays usable
         conn.rollback()
+
+
+class BaselineAgent:
+    """The single-call agent wrapped behind the shared Agent interface."""
+    name = "baseline"
+
+    def __init__(self, client: "anthropic.Anthropic | None" = None):
+        self.client = client or anthropic.Anthropic()
+
+    def answer(self, question: str, conn: psycopg.Connection) -> AgentResult:
+        result = AgentResult()
+        t0 = time.perf_counter()
+        try:
+            schema = load_schema(conn)
+            raw, usage = call_claude(self.client, question, schema)
+            result.input_tokens = usage.input_tokens
+            result.output_tokens = usage.output_tokens
+            result.cost = (usage.input_tokens * PRICE_IN + usage.output_tokens * PRICE_OUT) / 1_000_000
+
+            sql = extract_sql(raw)
+            if not sql:
+                result.error = "no SQL fence in response"
+                result.category = "no_sql"
+                return result
+            result.sql = sql
+
+            safe, reason = is_safe_sql(sql)
+            if not safe:
+                result.error = f"unsafe SQL ({reason})"
+                result.category = "unsafe_sql"
+                return result
+
+            try:
+                cols, rows, _ = execute_sql(conn, sql, max_rows=10_000)
+                result.result_rows = rows
+                result.result_columns = cols
+            except psycopg.Error as e:
+                conn.rollback()
+                result.error = str(e).strip().splitlines()[0][:200]
+                result.category = "sql_error"
+        finally:
+            result.latency_sec = round(time.perf_counter() - t0, 3)
+        return result
 
 
 def main() -> None:

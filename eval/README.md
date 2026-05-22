@@ -78,10 +78,13 @@ return the same rows in a different order are treated as equivalent. This is
 wrong for queries that explicitly ask for ordering ("top 10 by X") — those
 should preserve order. Tracked for a v2 scorer.
 
-## Baseline reference
+## Reference runs
 
-| Run | Agent | Dataset | Correct | Avg cost | Avg latency |
+| Date | Agent | Score | Total cost | Avg latency | Notes |
 |---|---|---|---|---|---|
-| 2026-05-21 | baseline (Sonnet 4.5, single call, schema-in-prompt) | v1 (12 Qs) | 10/12 → fixed gold → 12/12 | $0.0045 | 4.6s |
+| 2026-05-21 | baseline | 10/12 → 12/12 after gold fix | $0.054 | 4.6s | Single LLM call, schema in prompt. Surfaced UTC-vs-local-date bug in ground truth. |
+| 2026-05-22 | multi (LangGraph) | 7/12 → 9/12 → 12/12 over 3 iterations | $0.103 | 9.6s | Plan → synthesize → execute (with retry) → summarize. First run over-applied timezone conversion (regression to 58%); tightened prompts + aligned gold to Chicago-local semantics. |
 
-This is the floor. Every Day 4+ change must measurably move this.
+The eval is a no-regression gate for SQL correctness. Multi-agent's prose
+answers, retry recovery, and silent-zero detection are not measured here —
+those live in the demo video and qualitative review.
