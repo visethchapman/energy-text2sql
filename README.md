@@ -74,6 +74,12 @@ A short walkthrough — ask the Feb 2021 freeze question, watch the multi-agent 
 
 https://github.com/user-attachments/assets/5569adfb-883f-4fee-aa64-c644d872ae32
 
+> **Note for visitors:** this runs locally with your own API keys. You'll
+> need a free [Anthropic Console](https://console.anthropic.com) key (a few
+> dollars covers exploring it) and a free [EIA Open Data](https://www.eia.gov/opendata/register.php)
+> key. No keys are bundled — the repo's `.env` is gitignored and never
+> contains real credentials.
+
 Run it yourself in about 10 minutes:
 
 ### Prerequisites
