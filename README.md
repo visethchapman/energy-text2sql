@@ -70,7 +70,9 @@ scorer limitations.
 
 ## Demo
 
-📹 *Demo video coming.*
+A short walkthrough — ask the Feb 2021 freeze question, watch the multi-agent stream plan → SQL → result → answer:
+
+https://github.com/user-attachments/assets/5569adfb-883f-4fee-aa64-c644d872ae32
 
 Run it yourself in about 10 minutes:
 
