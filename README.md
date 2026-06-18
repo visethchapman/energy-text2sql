@@ -8,8 +8,10 @@ Runs locally on Postgres + pgvector + LangGraph + Claude + FastAPI — no
 Databricks workspace required. The shape of the pipeline is borrowed from
 Databricks' [dbx-unifiedchat](https://github.com/databricks-solutions/dbx-unifiedchat).
 
-> **Status:** v1 done. Multi-agent pipeline, streaming UI, 12/12 on the
-> 12-question eval. v2 ideas in the [roadmap](#roadmap).
+> **Status:** v1 + v2 done. Multi-agent pipeline, SSE-streaming UI, and
+> vector-routed schema RAG (pgvector + HuggingFace BGE). 12/12 on the
+> 12-question eval across all three modes. More v2 ideas in the
+> [roadmap](#roadmap).
 
 ---
 
@@ -57,9 +59,10 @@ float-tolerant).
 | Agent | Correct | Total cost | Avg latency | Notes |
 |---|---|---|---|---|
 | **baseline** (single Claude call, schema in prompt) | 12/12 | $0.054 | 4.6s | First run scored 10/12. The two failures were a UTC-vs-local-date bug in my gold SQL, not the agent's output. |
-| **multi** (LangGraph 4-node) | 12/12 | $0.103 (2.3×) | 9.6s (2.1×) | First run scored 7/12. The synthesis prompt was pushing timezone conversion on every query, including ones that didn't need it. |
+| **multi** (LangGraph 4-node) | 12/12 | $0.103 | 9.6s | First run scored 7/12. The synthesis prompt was pushing timezone conversion on every query, including ones that didn't need it. |
+| **multi + RAG (k=8)** (vector-routed schema via pgvector + HuggingFace) | 12/12 | $0.110 | 9.1s | Retrieves the top-8 most relevant column chunks instead of dumping the whole schema. At 17 chunks the savings don't materialize — see notes below. |
 
-Both agents tie at 12/12. The multi-agent does things the eval can't
+All three modes tie at 12/12. The multi-agent does things the eval can't
 score: written summaries, retrying on SQL errors, and handling empty
 results without making up an answer.
 
@@ -219,6 +222,29 @@ SSE pushes each node's output as it finishes, so plan, SQL, result
 table, and answer fill in over the same time window. Total latency is
 identical. The experience of using it is not.
 
+### RAG isn't a free lunch at small scale
+
+V2 added vector-routed schema retrieval (pgvector + HuggingFace
+`bge-large-en-v1.5` embeddings + HNSW (Hierarchical Navigable Small Worlds) index, k=8). Same pattern Databricks
+Genie, Snowflake Cortex Analyst, and Vanna AI use.
+
+At my dataset's tiny scale (17 column chunks) it doesn't save tokens —
+it actually *adds* about 9% because formatted column descriptions are
+more verbose than a raw schema dump. Accuracy stayed at 12/12.
+
+The pattern is designed for warehouse-scale schemas (1000s of columns)
+where the full schema literally can't fit in any prompt. I built it to
+demonstrate the production approach, not because 17 chunks needs RAG.
+Sometimes the honest answer is *"the technique works, just not on this
+size of dataset."*
+
+One detail worth knowing — the **HNSW index is pre-computed at index
+creation time**, not at query time. Postgres builds the layered
+nearest-neighbor graph once when `CREATE INDEX ... USING hnsw` runs and
+incrementally maintains it on every insert. At query time you're just
+traversing a structure that already exists, which is why the lookup is
+milliseconds even at millions of rows.
+
 ---
 
 ## Roadmap
@@ -230,6 +256,7 @@ identical. The experience of using it is not.
 - Day 4: LangGraph multi-agent (plan / synthesize / execute / summarize)
 - Day 5: FastAPI + Pico.css UI + SSE streaming
 - Day 6: README + demo video + polish
+- Day 7: Vector-routed schema retrieval (pgvector + HuggingFace BGE embeddings, k=8) — v2
 
 ### v2 ideas (see [TODO.md](TODO.md))
 - Encode region→timezone in the schema (today: hardcoded to Houston/Chicago)
@@ -237,7 +264,7 @@ identical. The experience of using it is not.
 - Grow eval dataset to ~25 questions, including window functions + cross-region joins
 - Load CISO/PJM/NYIS demand for genuine multi-region queries
 - DSPy optimizer pass on the synthesis prompt (needs the larger eval set first)
-- Vector-search routing over schema cards (instead of stuffing the entire schema in every prompt)
+- ~~Vector-search routing over schema cards~~ ✅ shipped Day 7 as multi+RAG mode
 
 ---
 
