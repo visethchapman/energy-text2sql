@@ -84,6 +84,7 @@ should preserve order. Tracked for a v2 scorer.
 |---|---|---|---|---|---|
 | 2026-05-21 | baseline | 10/12 → 12/12 after gold fix | $0.054 | 4.6s | Single LLM call, schema in prompt. Surfaced UTC-vs-local-date bug in ground truth. |
 | 2026-05-22 | multi (LangGraph) | 7/12 → 9/12 → 12/12 over 3 iterations | $0.103 | 9.6s | Plan → synthesize → execute (with retry) → summarize. First run over-applied timezone conversion (regression to 58%); tightened prompts + aligned gold to Chicago-local semantics. |
+| 2026-06-18 | multi + RAG (k=8) | 12/12 | $0.110 | 9.1s | Vector-routed schema retrieval via pgvector + bge-large embeddings. **+9% input tokens** at this 17-chunk scale because formatted column descriptions are more verbose than a raw schema dump. The pattern is designed for warehouse-scale schemas (1000s of columns) — at 17 chunks it doesn't save tokens, only demonstrates the production approach. |
 
 The eval is a no-regression gate for SQL correctness. Multi-agent's prose
 answers, retry recovery, and silent-zero detection are not measured here —

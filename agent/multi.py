@@ -228,8 +228,27 @@ def _build_graph(client: anthropic.Anthropic, conn: psycopg.Connection):
 class MultiAgent:
     name = "multi"
 
-    def __init__(self, client: anthropic.Anthropic | None = None):
+    def __init__(
+        self,
+        client: anthropic.Anthropic | None = None,
+        *,
+        use_rag: bool = False,
+        rag_k: int = 8,
+    ):
         self.client = client or anthropic.Anthropic()
+        self.use_rag = use_rag
+        self.rag_k = rag_k
+
+    def _build_schema_for(self, question: str, conn: psycopg.Connection) -> str:
+        """Return the schema string to put in the prompt.
+
+        With use_rag=False: full schema dump via load_schema() — the v1 behavior.
+        With use_rag=True:  top-K relevant column chunks retrieved via pgvector.
+        """
+        if self.use_rag:
+            from agent.retrieval import retrieve_relevant_columns
+            return retrieve_relevant_columns(question, conn, k=self.rag_k)
+        return load_schema(conn)
 
     def stream(self, question: str, conn: psycopg.Connection):
         """Yield events as each LangGraph node completes.
@@ -246,7 +265,7 @@ class MultiAgent:
         graph = _build_graph(self.client, conn)
         initial: State = {
             "question": question,
-            "schema": load_schema(conn),
+            "schema": self._build_schema_for(question, conn),
             "input_tokens": 0, "output_tokens": 0, "cost": 0.0,
             "retry_count": 0,
         }
@@ -281,7 +300,7 @@ class MultiAgent:
         graph = _build_graph(self.client, conn)
         initial: State = {
             "question": question,
-            "schema": load_schema(conn),
+            "schema": self._build_schema_for(question, conn),
             "input_tokens": 0, "output_tokens": 0, "cost": 0.0,
             "retry_count": 0,
         }

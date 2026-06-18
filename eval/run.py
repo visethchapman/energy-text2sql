@@ -46,13 +46,13 @@ def load_dataset(limit: int | None = None, ids: list[str] | None = None) -> list
     return rows
 
 
-def make_agent(name: str, client: anthropic.Anthropic) -> Agent:
+def make_agent(name: str, client: anthropic.Anthropic, use_rag: bool = False, rag_k: int = 8) -> Agent:
     if name == "baseline":
         from agent.baseline import BaselineAgent
         return BaselineAgent(client)
     if name == "multi":
         from agent.multi import MultiAgent
-        return MultiAgent(client)
+        return MultiAgent(client, use_rag=use_rag, rag_k=rag_k)
     raise ValueError(f"unknown agent: {name}")
 
 
@@ -69,14 +69,19 @@ def main() -> None:
     parser.add_argument("--ids", nargs="+", default=None)
     parser.add_argument("--save", action="store_true")
     parser.add_argument("--verbose", "-v", action="store_true")
+    parser.add_argument("--rag", action="store_true",
+                        help="(multi only) use vector-routed schema retrieval instead of full schema")
+    parser.add_argument("--rag-k", type=int, default=8,
+                        help="(multi only) number of column chunks to retrieve when --rag is set")
     args = parser.parse_args()
 
     dataset = load_dataset(limit=args.limit, ids=args.ids)
-    print(f"Running {len(dataset)} questions against agent='{args.agent}'...\n")
+    mode = f"{args.agent}{' +rag(k=' + str(args.rag_k) + ')' if args.rag else ''}"
+    print(f"Running {len(dataset)} questions against agent='{mode}'...\n")
 
     db_url = os.environ["DATABASE_URL"]
     client = anthropic.Anthropic()
-    agent = make_agent(args.agent, client)
+    agent = make_agent(args.agent, client, use_rag=args.rag, rag_k=args.rag_k)
 
     results: list[dict] = []
 
