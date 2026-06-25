@@ -10,7 +10,7 @@ Databricks' [dbx-unifiedchat](https://github.com/databricks-solutions/dbx-unifie
 
 > **Status:** v1 + v2 done. Multi-agent pipeline, SSE-streaming UI, and
 > vector-routed schema RAG (pgvector + HuggingFace BGE). 12/12 on the
-> 12-question eval across all three modes. More v2 ideas in the
+> 12-question eval across all three modes. Remaining ideas in the
 > [roadmap](#roadmap).
 
 ---
@@ -258,13 +258,12 @@ milliseconds even at millions of rows.
 - Day 6: README + demo video + polish
 - Day 7: Vector-routed schema retrieval (pgvector + HuggingFace BGE embeddings, k=8) — v2
 
-### v2 ideas (see [TODO.md](TODO.md))
+### Remaining v2 / v3 ideas (see [TODO.md](TODO.md))
 - Encode region→timezone in the schema (today: hardcoded to Houston/Chicago)
 - LLM-as-judge scoring mode to catch summary hallucinations
 - Grow eval dataset to ~25 questions, including window functions + cross-region joins
 - Load CISO/PJM/NYIS demand for genuine multi-region queries
 - DSPy optimizer pass on the synthesis prompt (needs the larger eval set first)
-- ~~Vector-search routing over schema cards~~ ✅ shipped Day 7 as multi+RAG mode
 
 ---
 

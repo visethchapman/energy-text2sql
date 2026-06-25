@@ -1,9 +1,9 @@
 # TODO
 
-Tracked v2 work and known limitations. Items here are intentional skips,
-not bugs.
+Tracked work and known limitations. Items here are intentional skips,
+not bugs. v1 + v2 (vector-routed RAG) shipped; remaining items below.
 
-## Architectural gaps to fix in v2
+## Architectural gaps still to fix
 
 ### Timezone metadata is hardcoded to Houston
 - `agent/multi.py` SYNTHESIS_SYSTEM contains the literal string
@@ -50,10 +50,14 @@ state). It is *not* multi-agent in the academic sense — no autonomy,
 no parallelism, no agent-to-agent messaging. README will clarify on
 launch.
 
-## Future enhancements (deliberately out of v1 scope)
+## Future enhancements (deliberately out of current scope)
 
-- DSPy optimizer pass on the synthesis prompt (needs eval set >= 25).
-- Vector-search routing over `docs.schema_cards` for picking relevant
-  tables instead of stuffing the entire schema.
-- FastAPI server + minimal React UI (planned for Day 5).
-- Recorded demo video (planned for Day 6).
+- DSPy optimizer pass on the synthesis prompt (needs eval set ≥ 25).
+- Adaptive RAG retrieval (rerank top-K by per-query relevance, or use a
+  cross-encoder reranker on the retrieved chunks).
+
+### Already shipped (kept for reference)
+
+- ✅ Vector-search routing over `docs.schema_chunks` — shipped Day 7 as multi+RAG mode.
+- ✅ FastAPI server + Pico.css UI — shipped Day 5.
+- ✅ Recorded demo video — shipped Day 6.
