@@ -1,6 +1,12 @@
 .env
 .venv/
 __pycache__/
+
+# Private notes — never push
+interview-notes.md
+*.private.md
+notes/
+
 *.pyc
 data/raw/
 data/processed/
