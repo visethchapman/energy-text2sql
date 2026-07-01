@@ -61,10 +61,18 @@ float-tolerant).
 | **baseline** (single Claude call, schema in prompt) | 12/12 | $0.054 | 4.6s | First run scored 10/12. The two failures were a UTC-vs-local-date bug in my gold SQL, not the agent's output. |
 | **multi** (LangGraph 4-node) | 12/12 | $0.103 | 9.6s | First run scored 7/12. The synthesis prompt was pushing timezone conversion on every query, including ones that didn't need it. |
 | **multi + RAG (k=8)** (vector-routed schema via pgvector + HuggingFace) | 12/12 | $0.110 | 9.1s | Retrieves the top-8 most relevant column chunks instead of dumping the whole schema. At 17 chunks the savings don't materialize — see notes below. |
+| **finetuned** (Qwen2.5-Coder-1.5B + LoRA, local inference) | 6/12 | $0.000 | 3.1s | LoRA fine-tune from the companion repo [`text2sql-finetune`](https://github.com/visethchapman/text2sql-finetune). Base model alone (no LoRA) scored 2/12 — the adapter tripled it. Local, no API cost per query. |
 
-All three modes tie at 12/12. The multi-agent does things the eval can't
+All three Claude modes tie at 12/12. The multi-agent does things the eval can't
 score: written summaries, retrying on SQL errors, and handling empty
 results without making up an answer.
+
+The **`finetuned`** row is a companion project: a LoRA fine-tune of a small open
+model (Qwen2.5-Coder-1.5B) trained on 280 synthetic ERCOT Q/SQL pairs. It scores
+6/12 vs Claude's 12/12 but runs entirely local at $0/query. Base model alone
+(no LoRA) scores 2/12 — the fine-tune tripled the base. See
+[`text2sql-finetune`](https://github.com/visethchapman/text2sql-finetune) for
+the full training pipeline + lessons.
 
 See [`eval/README.md`](eval/README.md) for the dataset format and known
 scorer limitations.

@@ -53,6 +53,12 @@ def make_agent(name: str, client: anthropic.Anthropic, use_rag: bool = False, ra
     if name == "multi":
         from agent.multi import MultiAgent
         return MultiAgent(client, use_rag=use_rag, rag_k=rag_k)
+    if name == "finetuned":
+        from agent.finetuned import FinetunedAgent
+        return FinetunedAgent()
+    if name == "qwen_base":
+        from agent.qwen_base import QwenBaseAgent
+        return QwenBaseAgent()
     raise ValueError(f"unknown agent: {name}")
 
 
@@ -64,7 +70,7 @@ def run_gold(conn: psycopg.Connection, sql: str) -> list[tuple]:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--agent", choices=["baseline", "multi"], default="baseline")
+    parser.add_argument("--agent", choices=["baseline", "multi", "finetuned", "qwen_base"], default="baseline")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--ids", nargs="+", default=None)
     parser.add_argument("--save", action="store_true")
