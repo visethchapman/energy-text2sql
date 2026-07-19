@@ -18,9 +18,10 @@ COPY agent/ ./agent/
 COPY server/ ./server/
 COPY static/ ./static/
 
-# HF Spaces convention: listen on 0.0.0.0:7860.
+# Bind to the platform-provided $PORT (Render sets this); default 7860 locally.
 ENV PORT=7860
 EXPOSE 7860
 
-# DATABASE_URL and ANTHROPIC_API_KEY are provided as Space secrets at runtime.
-CMD ["uvicorn", "server.main:app", "--host", "0.0.0.0", "--port", "7860"]
+# DATABASE_URL and ANTHROPIC_API_KEY are provided as host secrets at runtime.
+# Shell form so ${PORT} is expanded at container start.
+CMD uvicorn server.main:app --host 0.0.0.0 --port ${PORT:-7860}
