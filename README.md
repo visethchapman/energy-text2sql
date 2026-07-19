@@ -8,10 +8,13 @@ Runs locally on Postgres + pgvector + LangGraph + Claude + FastAPI — no
 Databricks workspace required. The shape of the pipeline is borrowed from
 Databricks' [dbx-unifiedchat](https://github.com/databricks-solutions/dbx-unifiedchat).
 
-> **Status:** v1 + v2 done. Multi-agent pipeline, SSE-streaming UI, and
-> vector-routed schema RAG (pgvector + HuggingFace BGE). 12/12 on the
-> 12-question eval across all three modes. Remaining ideas in the
-> [roadmap](#roadmap).
+> **Live demo:** **https://energy-text2sql.onrender.com**
+> (free tier — the first request after idle takes ~30-60s to wake, then it's fast)
+
+> **Status:** v1 + v2 done, deployed. Multi-agent pipeline, SSE-streaming UI,
+> vector-routed schema RAG (pgvector + HuggingFace BGE), and a live cloud
+> deployment. 12/12 on the 12-question eval across all three modes. Remaining
+> ideas in the [roadmap](#roadmap).
 
 ---
 
@@ -255,6 +258,36 @@ milliseconds even at millions of rows.
 
 ---
 
+## Deployment
+
+The [live demo](https://energy-text2sql.onrender.com) runs the baseline +
+multi-agent pipeline (no RAG) as a containerized service:
+
+```
+Browser ──▶ Render (Docker, FastAPI)  ──▶ Neon (managed Postgres)
+                     │
+                     └──▶ Anthropic API (Claude)
+```
+
+- **Container** — `Dockerfile` builds a slim image (python:3.12-slim + 8 runtime
+  deps; torch/transformers excluded since the hosted demo skips vector RAG),
+  serving uvicorn on the platform's `$PORT`.
+- **Database** — [Neon](https://neon.tech) serverless Postgres, seeded from the
+  local DB by [`scripts/seed_neon.py`](scripts/seed_neon.py) (version-agnostic
+  CSV `COPY`, no `pg_dump`).
+- **Host** — Render free web tier, auto-deploys on every push to `main`.
+- **Guardrails** — per-IP rate limiting (`slowapi`, 10/min + 100/day) plus a
+  hard monthly spend cap on the Anthropic key, since the demo is public and
+  each query costs a metered LLM call.
+- **Caveat** — the free instance sleeps after ~15 min idle, so the first
+  request wakes it (~30-60s), then it's responsive.
+
+Reproduce the deploy: build the image (`docker build -t energy-text2sql .`),
+seed a Neon DB (`uv run python scripts/seed_neon.py`), and point a Render web
+service at this repo with `DATABASE_URL` + `ANTHROPIC_API_KEY` env vars.
+
+---
+
 ## Roadmap
 
 ### Done
@@ -265,6 +298,7 @@ milliseconds even at millions of rows.
 - Day 5: FastAPI + Pico.css UI + SSE streaming
 - Day 6: README + demo video + polish
 - Day 7: Vector-routed schema retrieval (pgvector + HuggingFace BGE embeddings, k=8) — v2
+- Day 8: Cloud deployment — Docker + Render + Neon + rate limiting (see [Deployment](#deployment))
 
 ### Remaining v2 / v3 ideas (see [TODO.md](TODO.md))
 - Encode region→timezone in the schema (today: hardcoded to Houston/Chicago)

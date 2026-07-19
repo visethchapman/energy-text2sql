@@ -23,8 +23,11 @@ from typing import Annotated
 
 import psycopg
 from dotenv import load_dotenv
-from fastapi import Body, FastAPI, HTTPException, Query
+from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(dotenv_path=ROOT / ".env", override=True)
@@ -40,6 +43,21 @@ INDEX_HTML = STATIC_DIR / "index.html"
 
 app = FastAPI(title="Energy Text-to-SQL")
 
+
+def _client_ip(request: Request) -> str:
+    """Real client IP, honoring Render's X-Forwarded-For proxy header."""
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return get_remote_address(request)
+
+
+# Rate limiting: this is a public demo backed by a metered LLM API, so cap
+# each client to protect the (spend-capped) Anthropic key from abuse.
+limiter = Limiter(key_func=_client_ip, default_limits=[])
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 # One Anthropic client + one MultiAgent instance shared across requests.
 # max_retries handles transient 429/5xx (including the 529 "overloaded" that
 # Anthropic returns under load) with built-in exponential backoff.
@@ -54,7 +72,8 @@ def health() -> dict:
 
 
 @app.post("/api/ask")
-def ask(payload: Annotated[dict, Body()]) -> JSONResponse:
+@limiter.limit("10/minute;100/day")
+def ask(request: Request, payload: Annotated[dict, Body()]) -> JSONResponse:
     question = (payload or {}).get("question", "").strip()
     if not question:
         raise HTTPException(status_code=400, detail="question is required")
@@ -111,7 +130,8 @@ def _sse(event: dict) -> str:
 
 
 @app.get("/api/ask/stream")
-async def ask_stream(question: Annotated[str, Query(min_length=1, max_length=1000)]):
+@limiter.limit("10/minute;100/day")
+async def ask_stream(request: Request, question: Annotated[str, Query(min_length=1, max_length=1000)]):
     """SSE endpoint — emits one event per LangGraph node completion.
 
     Client should use EventSource. Each event is either:

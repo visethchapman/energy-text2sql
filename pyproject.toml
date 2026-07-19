@@ -19,6 +19,7 @@ dependencies = [
     "accelerate>=1.14.0",
     "torch>=2.12.1",
     "huggingface-hub>=1.19.0",
+    "slowapi>=0.1.10",
 ]
 
 [dependency-groups]
