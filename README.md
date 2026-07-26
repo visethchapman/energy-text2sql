@@ -258,6 +258,28 @@ milliseconds even at millions of rows.
 
 ---
 
+## Observability (LangSmith)
+
+Because the pipeline is a **LangGraph** graph, it traces to
+[LangSmith](https://smith.langchain.com) with no code changes — just env vars:
+
+```bash
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=ls_...
+LANGSMITH_PROJECT=energy-text2sql
+```
+
+With tracing on, every run shows up as a tree — `plan → synthesize → execute →
+summarize` — with per-node latency, token counts, cost, and the exact prompts
+and outputs. Useful for debugging why a node produced a given SQL/answer and
+for spotting slow or expensive steps.
+
+Tracing is **opt-in** (`LANGSMITH_TRACING=false` by default) and left **off on
+the public demo** — it would send visitor traffic to LangSmith and consume the
+free-tier trace quota. It's meant for local development and eval runs.
+
+---
+
 ## Deployment
 
 The [live demo](https://energy-text2sql.onrender.com) runs the baseline +
