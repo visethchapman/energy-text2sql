@@ -42,6 +42,16 @@ flowchart LR
     W --> A([Answer])
 ```
 
+### Who it's for
+
+Anyone who needs answers from a database but doesn't write SQL. The energy
+schema is the demo; the pattern generalizes to any org's internal data.
+
+- **Energy/grid analysts** — demand and weather questions, no SQL
+- **Grid operators / traders** — fast ad-hoc lookups (peaks, load vs temperature)
+- **Policy / regulatory researchers** — explore public EIA/NOAA data without a data team
+- **Non-technical managers** — self-serve answers instead of waiting on an analyst
+
 ### Example questions it can answer
 
 - *"What was the peak hourly ERCOT demand in 2024, and when did it occur?"*
